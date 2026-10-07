@@ -2,12 +2,21 @@
 src/OBJ
 src/OBJ_OPT
 src/OBJ_DBG
+src/OBJ_*/
 src/fe2
 src/fe2-opt
 src/fe2-dbg
 
-# From examples folders, ignore output (*.mech), log (*.log), and mesh (*msh) 
+# From examples folders, ignore output (*.mech), log (*.log), and mesh (*msh)
 # files.
 examples/**/*.mech
 examples/**/*.log
 examples/**/*.msh
+
+tests/OBJ*/
+tests/prnn_material_test
+tests/prnn_material_test-opt
+tests/prnn_material_test-dbg
+__pycache__/
+*.pt
+*.pth

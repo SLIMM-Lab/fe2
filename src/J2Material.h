@@ -103,6 +103,8 @@ class J2Material : public IsotropicMaterial
 
   virtual void              commit                ()       override;
 
+  virtual void              cancel                ()       override;
+
   virtual void              allocPoints
 
     ( idx_t                   count )                      override;

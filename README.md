@@ -13,4 +13,7 @@ Unlike [prnn3d](https://github.com/SLIMM-Lab/prnn3d), this implementation featur
 
 TODO:
 * Parallel computing with Message Passing Interface (MPI)
-* Physically Recurrent Neural Network implementation via LibTorch API
+
+An optional [online PRNN material using LibTorch](docs/prnn.md) can load
+pretrained pyprnn weights and replace the macro FE2 material. Its J2 histories
+follow Jive's accepted/rejected increment lifecycle.
