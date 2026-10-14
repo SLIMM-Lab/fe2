@@ -57,7 +57,9 @@ Ref<Module> mainModule
   jive::geom::declareShapes     ();
   jive::implict::declareModules ();
   jive::app::declareModules     ();
+#ifndef FE2_HEADLESS
   jive::gl::declareModules      ();
+#endif
 
   // ... also, declare user-developed modules, models and materials.
 

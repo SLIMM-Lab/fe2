@@ -1,0 +1,170 @@
+Bootstrap: docker
+From: registry-1.docker.io/library/ubuntu:24.04
+
+# Build inputs are the original Jem/Jive archives, not host-built libraries.
+# Paths can be overridden with apptainer build --build-arg NAME=value.
+%arguments
+    JEM_ARCHIVE=jem-3.0.zip
+    JIVE_ARCHIVE=jive-3.0.zip
+    JEM_SHA256=15d85b2e12aa92ae21662492b54c701f8b14a44c9ecc556be76e5bdefa313815
+    JIVE_SHA256=6057e07097557f9e921fd0209452f069a48ead5a488b3d10013c346a67816aed
+    FE2_REF=feat/python-prnn-bridge
+    BUILD_JOBS=4
+
+%files
+    {{ JEM_ARCHIVE }} /opt/build-inputs/jem-3.0.zip
+    {{ JIVE_ARCHIVE }} /opt/build-inputs/jive-3.0.zip
+
+%post
+    set -eu
+    umask 022
+    jobs='{{ BUILD_JOBS }}'
+    case "$jobs" in ''|*[!0-9]*) echo 'BUILD_JOBS must be a positive integer' >&2; exit 1;; esac
+    test "$jobs" -ge 1
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl git unzip zlib1g-dev \
+        python3-dev python3-venv \
+        libgl1 libglu1-mesa libgomp1 libfontconfig1 \
+        libxcursor1 libxext6 libxfixes3 libxft2 libxinerama1 libxrender1
+    rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /opt/toolkits /etc/fe2
+    cd /opt/build-inputs
+    printf '%s  %s\n' '{{ JEM_SHA256 }}' jem-3.0.zip '{{ JIVE_SHA256 }}' jive-3.0.zip | sha256sum -c -
+    unzip -q jem-3.0.zip -d /opt/toolkits
+    unzip -q jive-3.0.zip -d /opt/toolkits
+
+    # A ref can be a branch, tag or full commit SHA. Record the resolved SHA.
+    git init /opt/fe2
+    git -C /opt/fe2 remote add origin https://github.com/SLIMM-Lab/fe2.git
+    git -C /opt/fe2 fetch --depth 1 origin '{{ FE2_REF }}'
+    git -C /opt/fe2 checkout --detach FETCH_HEAD
+    git -C /opt/fe2 rev-parse HEAD > /etc/fe2/source-commit
+
+    python3 -m venv /opt/fe2-venv
+    /opt/fe2-venv/bin/python -m pip install --no-cache-dir \
+        torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+    /opt/fe2-venv/bin/python -m pip install --no-cache-dir \
+        numpy==2.2.6 pandas==2.2.3 pybind11==3.0.1 \
+        gmsh==4.15.2 matplotlib==3.10.3
+    /opt/fe2-venv/bin/python -m pip check
+
+    # The same environment is used during the build and at runtime.
+    cat > /etc/fe2/environment.sh <<'ENVIRONMENT'
+export JEMDIR=/opt/toolkits/jem-3.0
+export JIVEDIR=/opt/toolkits/jive-3.0
+export VIRTUAL_ENV=/opt/fe2-venv
+export PATH="/opt/fe2-venv/bin:/opt/fe2/src:$PATH"
+export PYTHONPATH="/opt/fe2/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE=1
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/fe2-matplotlib-$(id -u)}"
+export FE2_DEFAULT_WEIGHTS=/opt/fe2/weights/prnn_gp_80_0.pth
+ENVIRONMENT
+    . /etc/fe2/environment.sh
+
+    # Runtime GL libraries above serve Gmsh; GL development headers are not
+    # installed, so the Jem/Jive build and solver are headless.
+    # Generic compiler flags avoid tuning the image to the build host's CPU.
+    cd "$JEMDIR"
+    ./configure --with-threads --without-mpi --without-crypto --without-ssl --without-hdf5 \
+        --cxx-flags='-O -Wall -fstrict-aliasing'
+    make -j"$jobs"
+    cd "$JIVEDIR"
+    ./configure
+    make -j"$jobs"
+    make -C /opt/fe2/python -j"$jobs" PYTHON=/opt/fe2-venv/bin/python
+    make -C /opt/fe2/src -j"$jobs" HEADLESS=1 PYTHON_BRIDGE=1 PYTHON=/opt/fe2-venv/bin/python
+
+    # Published test weights for the supplied plane-stress PRNN example.
+    mkdir -p /opt/fe2/weights
+    curl --fail --location --retry 3 \
+        https://surfdrive.surf.nl/index.php/s/XyIWSNUKp47jnrY/download \
+        --output /tmp/pyprnn-trained-models.zip
+    printf '%s  %s\n' 84bdafc95159b425615c167c1e7eb25efb9b3c14d5bbb90a3f8b48aa14dafa23 \
+        /tmp/pyprnn-trained-models.zip | sha256sum -c -
+    unzip -p /tmp/pyprnn-trained-models.zip trained_models/prnn_gp_80_0.pth > "$FE2_DEFAULT_WEIGHTS"
+    printf '%s  %s\n' b6eb0cad7b868da09dd233df83b27e53b3ebad946c9e178f25b502167caac64b \
+        "$FE2_DEFAULT_WEIGHTS" | sha256sum -c -
+
+    # A SIF is read-only. Generate meshes/output in an explicit writable
+    # directory instead of invoking the in-source example's go.sh.
+    cat > /usr/local/bin/fe2-prnn-example <<'RUNNER'
+#!/bin/bash
+set -euo pipefail
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo 'Usage: fe2-prnn-example OUTPUT_DIRECTORY [CHECKPOINT.pth]' >&2
+    exit 2
+fi
+weights=$(realpath -- "${2:-$FE2_DEFAULT_WEIGHTS}")
+test -f "$weights"
+mkdir -p -- "$1"
+cd -- "$1"
+if [ -n "$(find . -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo 'Choose an empty output directory for the PRNN example.' >&2
+    exit 2
+fi
+cp /opt/fe2/examples/plate_incs/python_prnn/macro.pro macro.pro
+python /opt/fe2/examples/plate_incs/fe2_j2/create_macro_mesh.py -nopopup
+weights_property=${weights//\\/\\\\}
+weights_property=${weights_property//\"/\\\"}
+exec fe2 macro.pro -p "model.model.bulk.material.weights = \"$weights_property\";"
+RUNNER
+    chmod 755 /usr/local/bin/fe2-prnn-example
+    /opt/fe2-venv/bin/python -m pip freeze > /etc/fe2/python-packages.txt
+    rm -rf /opt/build-inputs
+    rm -f /tmp/pyprnn-trained-models.zip
+
+%environment
+    . /etc/fe2/environment.sh
+
+%runscript
+    exec /opt/fe2/src/fe2 "$@"
+
+%test
+    set -eu
+    . /etc/fe2/environment.sh
+    python -m pip check
+    python -m unittest discover -s /opt/fe2/tests -p 'test_python_bridge.py' -v
+    test_root=$(mktemp -d /tmp/fe2-container-test.XXXXXX)
+    trap 'rm -rf "$test_root"' EXIT
+    fe2-prnn-example "$test_root/results" > "$test_root/example.log" 2>&1
+    python - "$test_root" <<'CHECK'
+from pathlib import Path
+import sys
+import numpy as np
+root = Path(sys.argv[1])
+log = (root / 'example.log').read_text()
+assert 'Runtime phase completed successfully.' in log, log[-4000:]
+assert log.count('solver converged') == 55
+reactions = np.loadtxt(root / 'results/lodi.out', delimiter=',')
+assert reactions.shape == (55, 3) and np.isfinite(reactions).all()
+print('Container example: 55 converged increments and finite reactions.')
+CHECK
+
+%labels
+    Description CPU Python PRNN bridge and FE2 solver with Jem/Jive 3.0
+    FE2Ref {{ FE2_REF }}
+    Python 3.12
+    Torch 2.8.0+cpu
+
+%help
+    Build with the supplied Jem/Jive ZIP archives (Apptainer 1.3+):
+      apptainer build --fakeroot --build-arg JEM_ARCHIVE=/path/jem-3.0.zip \
+        --build-arg JIVE_ARCHIVE=/path/jive-3.0.zip fe2.sif apptainer.def
+
+    Run a case from a writable host directory:
+      apptainer run --cleanenv --bind "$PWD":/work --pwd /work fe2.sif macro.pro
+
+    Run the included pretrained example into an empty host output directory:
+      apptainer exec --cleanenv --bind "$PWD":/work --pwd /work \
+        fe2.sif fe2-prnn-example /work/results
+
+    Python training tools and tests are available with apptainer exec.
+    The included weights describe the public checkpoint's plane-stress
+    training material, not the original fe2_j2 inclusion micromodel.

@@ -24,6 +24,9 @@
 #include "MelroMaterial.h"
 #include "J2Material.h"
 #include "FE2Material.h"
+#ifdef FE2_WITH_PYTHON
+#include "PRNNMaterial.h"
+#endif
 
 
 //=======================================================================
@@ -115,6 +118,9 @@ void declareMaterials_
   MelroMaterial::declare     ();
   J2Material::declare        ();
   FE2Material::declare       ();
+#ifdef FE2_WITH_PYTHON
+  PRNNMaterial::declare      ();
+#endif
 }
 
 

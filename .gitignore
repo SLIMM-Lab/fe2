@@ -11,3 +11,19 @@ src/fe2-dbg
 examples/**/*.mech
 examples/**/*.log
 examples/**/*.msh
+
+src/OBJ_*/
+python/OBJ*/
+python/_fe2_material*.so
+__pycache__/
+tests/OBJ*/
+tests/prnn_material_test
+tests/prnn_material_test-opt
+tests/prnn_material_test-dbg
+examples/plate_incs/prnn_j2/lodi.out
+examples/plate_incs/python_prnn/lodi.out
+
+# Apptainer images and local toolkit build inputs.
+/*.sif
+/jem-3.0.zip
+/jive-3.0.zip
